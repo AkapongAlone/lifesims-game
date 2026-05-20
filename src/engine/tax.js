@@ -1,7 +1,5 @@
-import { clamp } from './helpers.js';
-
 const TAX_BRACKETS = [
-  { upTo: 150_000,   rate: 0.00 },
+  { upTo: 150_000,   rate: 0 },
   { upTo: 300_000,   rate: 0.05 },
   { upTo: 500_000,   rate: 0.10 },
   { upTo: 750_000,   rate: 0.15 },
@@ -39,8 +37,9 @@ export function calcEmployedGross(company, skills, traits) {
   return gross;
 }
 
-/** Lifestyle spending scaled by extravagance + socialStatus. */
+/** Lifestyle spending scaled by extravagance + socialStatus (clothing, subscriptions, etc).
+ *  Reduced from 0.15 to 0.07 base since food+transport are now explicit daily deductions. */
 export function calcLifestyleSpend(salary, traits) {
   const lifeMult = (0.4 + (traits.extravagance - 1) * 0.3) * (1 + (traits.socialStatus - 1) * 0.12);
-  return salary * 0.15 * lifeMult;
+  return salary * 0.07 * lifeMult;
 }

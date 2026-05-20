@@ -1,5 +1,5 @@
-import { clamp, fmtCompact, pushLog, uid } from './helpers.js';
-import { COMPANIES, SKILL_META } from '../content.js';
+import { clamp, fmtCompact, pushLog } from './helpers.js';
+import { COMPANIES, SKILL_META, INSURANCE_PLANS, WANT_ITEMS } from '../content.js';
 import { calcEmployedGross } from './tax.js';
 
 /**
@@ -16,7 +16,6 @@ export function rollMonthlyEvent(state) {
 
   const layoffProb = (1 - state.company.stability) * 0.018;
   if (Math.random() < layoffProb) {
-    // Capture compensation multiplier at roll time (fair — it's the company's offer)
     const severanceMultiplier = 2;
     return {
       id: 'layoff',
@@ -33,6 +32,40 @@ export function rollMonthlyEvent(state) {
           log: pushLog(s, `ถูกเลิกจ้างจาก ${s.company.name} (เงินชดเชย ${fmtCompact(s.currentSalary * severanceMultiplier)})`, 'bad'),
         }),
       }],
+    };
+  }
+
+  // Want event — probability scales with extravagance + socialStatus
+  const wantProb = state.traits.extravagance * 0.04 + state.traits.socialStatus * 0.02;
+  if (Math.random() < wantProb) {
+    const item = WANT_ITEMS[Math.floor(Math.random() * WANT_ITEMS.length)];
+    const PENALTY = { 1: 2, 2: 2, 3: 5, 4: 10, 5: 12 };
+    const happyPenalty = PENALTY[state.traits.extravagance] ?? 5;
+    return {
+      id: 'want_' + item.id,
+      title: `${item.label} 🛍️`,
+      desc: `${item.desc} — ราคา ${fmtCompact(item.cost)}`,
+      choices: [
+        {
+          label: `ซื้อเลย (${fmtCompact(item.cost)})`,
+          hint: '+happiness +8',
+          apply: (s) => ({
+            ...s,
+            cash: s.cash - item.cost,
+            happiness: clamp(s.happiness + 8, 0, 100),
+            log: pushLog(s, `ซื้อ${item.label} ${fmtCompact(item.cost)}`, 'info'),
+          }),
+        },
+        {
+          label: 'อดทนไว้',
+          hint: `-${happyPenalty} happiness`,
+          apply: (s) => ({
+            ...s,
+            happiness: clamp(s.happiness - happyPenalty, 0, 100),
+            log: pushLog(s, `อดซื้อ${item.label} — กลืนไม่เข้าคายไม่ออก`, 'info'),
+          }),
+        },
+      ],
     };
   }
 
@@ -54,15 +87,22 @@ export function rollMonthlyEvent(state) {
   }
 
   if (roll < 0.09) {
-    const amt = 5000 + Math.random() * 20000;
     return {
-      id: 'hospital',
-      title: 'เข้าโรงพยาบาล 🏥',
-      desc: `ป่วยกะทันหัน ค่ารักษาประมาณ ${fmtCompact(amt)}`,
-      choices: [{
-        label: 'จ่ายค่ารักษา',
-        apply: (s) => ({ ...s, cash: s.cash - amt, energy: clamp(s.energy - 30, 0, 100), happiness: clamp(s.happiness - 8, 0, 100), log: pushLog(s, `เข้าโรงพยาบาล จ่ายค่ารักษา ${fmtCompact(amt)}`, 'bad') }),
-      }],
+      id: 'course',
+      title: `คอร์สอัพสกิล`,
+      desc: `มีคอร์สน่าสนใจ`,
+      choices: (() => {
+        const cost = 8000 + Math.random() * 12000;
+        const skillKey = ['tech', 'finance', 'creative'][Math.floor(Math.random() * 3)];
+        return [
+          {
+            label: `ลงคอร์ส ${SKILL_META[skillKey].emoji} (${fmtCompact(cost)})`,
+            hint: `+${SKILL_META[skillKey].label} skill +8`,
+            apply: (s) => ({ ...s, cash: s.cash - cost, skills: { ...s.skills, [skillKey]: clamp(s.skills[skillKey] + 8, 0, 100) }, log: pushLog(s, `ลงคอร์ส ${SKILL_META[skillKey].label} +8 (${fmtCompact(cost)})`, 'good') }),
+          },
+          { label: 'ผ่าน', apply: (s) => s },
+        ];
+      })(),
     };
   }
 
@@ -88,28 +128,7 @@ export function rollMonthlyEvent(state) {
   }
 
   if (roll < 0.17) {
-    const cost = 8000 + Math.random() * 12000;
-    const skillKey = ['tech', 'finance', 'creative'][Math.floor(Math.random() * 3)];
-    return {
-      id: 'course',
-      title: `คอร์สอัพสกิล ${SKILL_META[skillKey].emoji}`,
-      desc: `มีคอร์ส ${SKILL_META[skillKey].label} น่าสนใจ ราคา ${fmtCompact(cost)}`,
-      choices: [
-        {
-          label: 'ลงคอร์ส',
-          hint: `+${SKILL_META[skillKey].label} skill +8`,
-          apply: (s) => ({ ...s, cash: s.cash - cost, skills: { ...s.skills, [skillKey]: clamp(s.skills[skillKey] + 8, 0, 100) }, log: pushLog(s, `ลงคอร์ส ${SKILL_META[skillKey].label} +8 (${fmtCompact(cost)})`, 'good') }),
-        },
-        {
-          label: 'ผ่าน',
-          apply: (s) => s,
-        },
-      ],
-    };
-  }
-
-  if (roll < 0.20) {
-    const amt = 8000 + Math.random() * 15000;
+    const amt = 8000 + Math.random() * 12000;
     return {
       id: 'car',
       title: 'รถเสีย 🔧',
@@ -122,6 +141,95 @@ export function rollMonthlyEvent(state) {
   }
 
   return null;
+}
+
+/**
+ * Build a mild or severe illness pendingEvent.
+ * choice.apply receives state with pendingEvent already cleared.
+ * @param {import('../content.js').GameState} state
+ * @param {boolean} severe
+ * @returns {import('../content.js').PendingEvent}
+ */
+export function illnessEvent(state, severe) {
+  if (!severe) {
+    return {
+      id: 'illness_mild',
+      title: 'ร่างกายไม่สู้ 🤒',
+      desc: `exhaustion สะสมอยู่ที่ ${Math.round(state.exhaustion)} — ร่างกายเริ่มส่งสัญญาณเตือน`,
+      choices: [
+        {
+          label: 'ฝืนทำงานต่อ',
+          hint: 'exhaustion +10, performance -3',
+          apply: (s) => ({
+            ...s,
+            performance: s.performance - 3,
+            exhaustion: clamp(s.exhaustion + 10, 0, 100),
+            happiness: clamp(s.happiness - 5, 0, 100),
+            log: pushLog(s, 'ฝืนทำงานทั้งที่ไม่สบาย 😰', 'bad'),
+          }),
+        },
+        {
+          label: 'หยุดพักที่บ้าน',
+          hint: 'energy +20, exhaustion -20, performance -5',
+          apply: (s) => ({
+            ...s,
+            energy: clamp(s.energy + 20, 0, 100),
+            exhaustion: clamp(s.exhaustion - 20, 0, 100),
+            performance: s.performance - 5,
+            log: pushLog(s, 'หยุดพักรักษาตัว 💊', 'info'),
+          }),
+        },
+      ],
+    };
+  }
+
+  // Severe illness — single forced choice; may chain a layoff event
+  const insurancePlan = INSURANCE_PLANS[state.insurance || 'none'];
+  const baseCost = 8000 + Math.random() * 12000;
+  const finalCost = baseCost * (1 - insurancePlan.coverage);
+  const coverageNote = insurancePlan.coverage > 0
+    ? ` (ประกันรับ ${(insurancePlan.coverage * 100).toFixed(0)}%)`
+    : '';
+
+  return {
+    id: 'illness_severe',
+    title: 'ป่วยหนัก ต้องนอนโรงพยาบาล 🏥',
+    desc: `exhaustion ${Math.round(state.exhaustion)} — ร่างกายล้มเหลว ค่ารักษา ${fmtCompact(finalCost)}${coverageNote}${insurancePlan.firesafe ? '' : ' ⚠️ เสี่ยงถูกไล่ออก'}`,
+    choices: [{
+      label: 'เข้ารับการรักษา',
+      apply: (s) => {
+        const fireRoll = !insurancePlan.firesafe && Math.random() < 0.18;
+        const base = {
+          ...s,
+          cash: s.cash - finalCost,
+          energy: clamp(s.energy - 30, 0, 100),
+          exhaustion: clamp(s.exhaustion - 30, 0, 100),
+          performance: s.performance - 12,
+          happiness: clamp(s.happiness - 10, 0, 100),
+          log: pushLog(s, `ป่วยหนัก นอน รพ. จ่ายค่ารักษา ${fmtCompact(finalCost)}${coverageNote}`, 'bad'),
+        };
+        if (fireRoll) return {
+          ...base,
+          pendingEvent: {
+            id: 'illness_fired',
+            title: 'ถูกเลิกจ้างเพราะขาดงาน 😱',
+            desc: 'บริษัทตัดสินใจให้ออกเนื่องจากขาดงานนาน (ซื้อประกันครอบคลุมเพื่อป้องกัน)',
+            choices: [{
+              label: 'รับชะตากรรม',
+              apply: (st) => ({
+                ...st,
+                unemployed: true,
+                currentSalary: 0,
+                performance: 0,
+                log: pushLog(st, 'ถูกไล่ออกเพราะป่วยหนัก', 'bad'),
+              }),
+            }],
+          },
+        };
+        return base;
+      },
+    }],
+  };
 }
 
 /** Job search event during unemployment. */

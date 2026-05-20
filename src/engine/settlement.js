@@ -1,14 +1,15 @@
 import { clamp, fmtCompact, pushLog } from './helpers.js';
 import { computeMonthlyTax, calcEmployedGross, calcLifestyleSpend } from './tax.js';
 import { passiveIncomeOf } from './portfolio.js';
+import { ASSETS, INSURANCE_PLANS } from '../content.js';
 
-/** Apply end-of-month logic: payroll, tax, expenses, debt amortization, passive income. */
+/** Apply end-of-month logic: payroll, tax, expenses, DCA, debt amortization, passive income. */
 export function monthlySettlement(state) {
   let s = { ...state };
 
   let gross = 0;
   if (s.unemployed) {
-    gross = 0;
+    // gross stays 0
   } else if (s.company.type === 'freelance') {
     const base = calcEmployedGross(s.company, s.skills, s.traits);
     const variance = Math.max(0.05, 0.6 + Math.random() * 0.8);
@@ -21,11 +22,14 @@ export function monthlySettlement(state) {
   const annualEstimate = gross * 12;
   const tax = s.unemployed ? 0 : computeMonthlyTax(annualEstimate, s.skills.finance);
 
+  // Lifestyle is reduced since food+transport are now daily explicit costs
   const lifestyle = calcLifestyleSpend(s.currentSalary || 15000, s.traits);
   const fixedDebtPayments = s.debts.filter(d => d.type === 'fixed').reduce((a, d) => a + d.monthly, 0);
   const loanPayments = s.debts.filter(d => d.type === 'loan' && d.remaining > 0).reduce((a, d) => a + d.monthly, 0);
   const utilities = 3000;
-  const totalExpense = lifestyle + fixedDebtPayments + loanPayments + utilities;
+  const insurancePlan = INSURANCE_PLANS[s.insurance || 'none'];
+  const insurancePremium = insurancePlan.premium;
+  const totalExpense = lifestyle + fixedDebtPayments + loanPayments + utilities + insurancePremium;
 
   const passive = passiveIncomeOf(s.portfolio, s.assetPrices);
   const net = (gross - tax) + passive - totalExpense;
@@ -43,7 +47,21 @@ export function monthlySettlement(state) {
     return { ...d, remaining: Math.max(0, d.remaining - principalPaid) };
   });
 
-  s.log = pushLog(s, `เงินเดือน ${fmtCompact(gross)} - ภาษี ${fmtCompact(tax)} - ค่าใช้จ่าย ${fmtCompact(totalExpense)} = ${net >= 0 ? '+' : ''}${fmtCompact(net)}`, net >= 0 ? 'good' : 'bad');
+  const expenseLabel = insurancePremium > 0 ? `+ประกัน ${fmtCompact(insurancePremium)}` : '';
+  s.log = pushLog(s, `เงินเดือน ${fmtCompact(gross)} - ภาษี ${fmtCompact(tax)} - ค่าใช้จ่าย ${fmtCompact(totalExpense)} ${expenseLabel}= ${net >= 0 ? '+' : ''}${fmtCompact(net)}`, net >= 0 ? 'good' : 'bad');
+
+  // DCA auto-buy after receiving payroll
+  const dcaSettings = s.dcaSettings || {};
+  for (const [asset, bahtAmt] of Object.entries(dcaSettings)) {
+    if (bahtAmt <= 0) continue;
+    const price = s.assetPrices[asset];
+    if (!price || s.cash < bahtAmt) continue;
+    const units = bahtAmt / price;
+    s.cash -= bahtAmt;
+    s.portfolio = { ...s.portfolio, [asset]: (s.portfolio[asset] || 0) + units };
+    s.portfolioCost = { ...s.portfolioCost, [asset]: (s.portfolioCost?.[asset] || 0) + bahtAmt };
+    s.log = pushLog(s, `DCA ${ASSETS[asset]?.label || asset} ${fmtCompact(bahtAmt)}`, 'info');
+  }
 
   let dHap = -1;
   if (net >= 0) dHap += 2;
@@ -63,7 +81,7 @@ export function applyReview(state) {
   if (!reviewMonths.includes(s.month)) return s;
 
   const perf = s.performance;
-  let bonus = 0, raisePct = 0, kind = 'info', msg = '';
+  let bonus = 0, raisePct = 0, kind, msg;
   if (perf > 30) {
     bonus = s.currentSalary * 1.5; raisePct = 0.08;
     kind = 'good'; msg = `Review: หัวหน้าพอใจมาก! โบนัส ${fmtCompact(bonus)} + ขึ้นเงินเดือน 8%`;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { tick, buildInitialState, fmt, fmtCompact, monthLabel, tradeKey, pushLog } from './engine/index.js';
-import { COMPANIES, WORK_MODES, AFTER_WORK, ASSETS, GOALS, SKILL_META, TRAIT_META } from './content.js';
+import { COMPANIES, WORK_MODES, AFTER_WORK, ASSETS, GOALS, SKILL_META, TRAIT_META, FOOD_TIERS, TRANSPORT_TIERS, INSURANCE_PLANS } from './content.js';
 import { storage } from './storage.js';
 
 // ============================================================
@@ -172,6 +172,9 @@ const CSS = `
 
 .ls-bar { background: var(--c-bg); border: 1px solid var(--c-bd); border-radius: 999px; overflow: hidden; height: 10px; position: relative; }
 .ls-bar-fill { height: 100%; transition: width 0.3s ease; }
+
+@keyframes ls-tick-bar { from { width: 0% } to { width: 100% } }
+.ls-tick-bar-fill { height: 100%; background: var(--c-ac); border-radius: 2px; }
 
 .ls-stat-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--c-sf2); }
 .ls-stat-row:last-child { border-bottom: none; }
@@ -506,6 +509,12 @@ function calcEmployedGrossUI(company, skills, traits) {
 // ============================================================
 
 function EventModal({ event, onChoice }) {
+  useEffect(() => {
+    const block = (e) => { if (e.key === 'Escape') e.preventDefault(); };
+    window.addEventListener('keydown', block, true);
+    return () => window.removeEventListener('keydown', block, true);
+  }, []);
+
   return (
     <div className="ls-modal-backdrop">
       <div className="ls-modal">
@@ -531,10 +540,12 @@ function EventModal({ event, onChoice }) {
 // ============================================================
 
 function TopBar({ state }) {
-  const happyColor  = state.happiness > 60 ? 'var(--c-gr)' : state.happiness > 30 ? 'var(--c-ac)' : 'var(--c-rd)';
-  const energyColor = state.energy    > 60 ? 'var(--c-gr)' : state.energy    > 30 ? 'var(--c-ac)' : 'var(--c-rd)';
-  const cashColor   = state.cash < 0 ? 'var(--c-rd)' : 'var(--c-tx)';
-  const nwColor     = state.netWorth < 0 ? 'var(--c-rd)' : 'var(--c-gr)';
+  const happyColor     = state.happiness  > 60 ? 'var(--c-gr)' : state.happiness  > 30 ? 'var(--c-ac)' : 'var(--c-rd)';
+  const energyColor    = state.energy     > 60 ? 'var(--c-gr)' : state.energy     > 30 ? 'var(--c-ac)' : 'var(--c-rd)';
+  const exhaustion     = state.exhaustion || 0;
+  const exhaustColor   = exhaustion < 40 ? 'var(--c-gr)' : exhaustion < 70 ? 'var(--c-ac)' : 'var(--c-rd)';
+  const cashColor      = state.cash < 0 ? 'var(--c-rd)' : 'var(--c-tx)';
+  const nwColor        = state.netWorth < 0 ? 'var(--c-rd)' : 'var(--c-gr)';
 
   return (
     <div className="ls-card" style={{ display:'flex', alignItems:'center', gap:16, padding:12, marginBottom:12, flexWrap:'wrap' }}>
@@ -557,17 +568,23 @@ function TopBar({ state }) {
         <div style={{ fontWeight:700, color:nwColor }}>{fmtCompact(state.netWorth)}</div>
       </div>
       <div style={{ flex:1 }} />
-      <div style={{ minWidth:120 }}>
+      <div style={{ minWidth:110 }}>
         <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
           <span>⚡ Energy</span><span style={{ color:energyColor, fontVariantNumeric:'tabular-nums' }}>{Math.round(state.energy)}</span>
         </div>
         <div className="ls-bar"><div className="ls-bar-fill" style={{ width:state.energy+'%', background:energyColor }} /></div>
       </div>
-      <div style={{ minWidth:120 }}>
+      <div style={{ minWidth:110 }}>
         <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
           <span>❤️ Happy</span><span style={{ color:happyColor, fontVariantNumeric:'tabular-nums' }}>{Math.round(state.happiness)}</span>
         </div>
         <div className="ls-bar"><div className="ls-bar-fill" style={{ width:state.happiness+'%', background:happyColor }} /></div>
+      </div>
+      <div style={{ minWidth:110 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', fontSize:11 }}>
+          <span>😮‍💨 Exhaust</span><span style={{ color:exhaustColor, fontVariantNumeric:'tabular-nums' }}>{Math.round(exhaustion)}</span>
+        </div>
+        <div className="ls-bar"><div className="ls-bar-fill" style={{ width:exhaustion+'%', background:exhaustColor }} /></div>
       </div>
     </div>
   );
@@ -679,52 +696,68 @@ function StatsPanel({ state }) {
 // ============================================================
 
 function PortfolioPanel({ state, setState }) {
-  const [selected, setSelected] = useState('gold');
-  const [amount, setAmount]     = useState(1);
-  const todayKey     = tradeKey(state);
-  const canTradeToday = state.lastTradeKey !== todayKey;
+  const [selected, setSelected]   = useState('gold');
+  const [bahtAmount, setBahtAmount] = useState(1000);
 
-  const meta    = ASSETS[selected];
-  const price   = state.assetPrices[selected];
-  const holding = state.portfolio[selected] || 0;
-  const cost    = price * amount;
+  const todayKey = tradeKey(state);
+  const canTrade = state.lastTradeKey !== todayKey;
+
+  const meta         = ASSETS[selected];
+  const price        = state.assetPrices[selected];
+  const holding      = state.portfolio[selected] || 0;
+  const holdingValue = holding * price;
+  const buyUnits     = bahtAmount / price;
+  const sellUnits    = bahtAmount / price;
 
   const buy = () => {
-    if (!canTradeToday || state.cash < cost) return;
-    setState(s => ({
-      ...s,
-      cash: s.cash - cost,
-      portfolio: { ...s.portfolio, [selected]: (s.portfolio[selected] || 0) + amount },
-      lastTradeKey: todayKey,
-      log: pushLog(s, `ซื้อ ${meta.label} ${amount} ${meta.unitLabel} @ ${fmt(price)}`, 'info'),
-    }));
+    if (!canTrade || state.cash < bahtAmount) return;
+    setState(s => {
+      const units = bahtAmount / s.assetPrices[selected];
+      return {
+        ...s,
+        cash: s.cash - bahtAmount,
+        portfolio: { ...s.portfolio, [selected]: (s.portfolio[selected] || 0) + units },
+        portfolioCost: { ...s.portfolioCost, [selected]: (s.portfolioCost?.[selected] || 0) + bahtAmount },
+        lastTradeKey: todayKey,
+        log: pushLog(s, `ซื้อ ${meta.label} ${fmtCompact(bahtAmount)} (${units.toFixed(4)} ${meta.unitLabel})`, 'info'),
+      };
+    });
   };
 
   const sell = () => {
-    if (!canTradeToday || holding < amount) return;
-    setState(s => ({
-      ...s,
-      cash: s.cash + cost,
-      portfolio: { ...s.portfolio, [selected]: holding - amount },
-      lastTradeKey: todayKey,
-      log: pushLog(s, `ขาย ${meta.label} ${amount} ${meta.unitLabel} @ ${fmt(price)}`, 'info'),
-    }));
+    if (!canTrade || holding < sellUnits) return;
+    setState(s => {
+      const units      = bahtAmount / s.assetPrices[selected];
+      const costBasis  = s.portfolioCost?.[selected] || 0;
+      const costReduce = holding > 0 ? (units / holding) * costBasis : 0;
+      return {
+        ...s,
+        cash: s.cash + bahtAmount,
+        portfolio: { ...s.portfolio, [selected]: holding - units },
+        portfolioCost: { ...s.portfolioCost, [selected]: Math.max(0, costBasis - costReduce) },
+        lastTradeKey: todayKey,
+        log: pushLog(s, `ขาย ${meta.label} ${fmtCompact(bahtAmount)}`, 'info'),
+      };
+    });
   };
+
+  const dcaSettings = state.dcaSettings || {};
 
   return (
     <div>
       <div className="ls-card-tight" style={{ marginBottom:10 }}>
         <div className="ls-h3">ราคาตลาดวันนี้</div>
         {Object.entries(ASSETS).map(([k, m]) => {
-          const p      = state.assetPrices[k];
-          const change = ((p - m.startPrice) / m.startPrice) * 100;
+          const p    = state.assetPrices[k];
+          const prev = (state.prevAssetPrices || state.assetPrices)[k];
+          const change = ((p - prev) / prev) * 100;
           return (
             <button key={k} onClick={() => setSelected(k)} className="ls-btn" data-sel={k === selected}
               style={{ width:'100%', justifyContent:'space-between', marginBottom:4, padding:'8px 10px' }}
             >
               <span>{m.emoji} {m.label}</span>
               <span style={{ display:'flex', gap:10, alignItems:'center' }}>
-                <span style={{ fontVariantNumeric:'tabular-nums', fontWeight:600 }}>{fmtCompact(p)}</span>
+                <span style={{ fontWeight:600 }}>{fmtCompact(p)}</span>
                 <span style={{ fontSize:11, color: change >= 0 ? 'var(--c-gr)' : 'var(--c-rd)', minWidth:50, textAlign:'right' }}>
                   {change >= 0 ? '▲' : '▼'} {Math.abs(change).toFixed(1)}%
                 </span>
@@ -737,40 +770,104 @@ function PortfolioPanel({ state, setState }) {
       <div className="ls-card-tight" style={{ marginBottom:10 }}>
         <div className="ls-h3">ซื้อขาย {meta.emoji} {meta.label}</div>
         <div className="ls-stat-row"><span className="ls-stat-label">ราคา</span><span className="ls-stat-value">{fmt(price)}</span></div>
-        <div className="ls-stat-row"><span className="ls-stat-label">ถืออยู่</span><span className="ls-stat-value">{holding.toFixed(2)} {meta.unitLabel}</span></div>
+        <div className="ls-stat-row">
+          <span className="ls-stat-label">ถืออยู่</span>
+          <span className="ls-stat-value">{holding.toFixed(4)} <span style={{ color:'var(--c-dm)', fontWeight:400 }}>= {fmtCompact(holdingValue)}</span></span>
+        </div>
+        {!canTrade && (
+          <div className="ls-muted" style={{ fontSize:11, marginTop:6, padding:'6px 8px', background:'var(--c-sf2)', borderRadius:4 }}>
+            ⏰ เทรดได้วันละ 1 ครั้ง — รอพรุ่งนี้
+          </div>
+        )}
         <div style={{ display:'flex', gap:6, alignItems:'center', marginTop:8 }}>
-          <span className="ls-muted">จำนวน:</span>
-          <input type="number" min="0.01" step="0.01" className="ls-input" style={{ width:100 }}
-            value={amount} onChange={e => setAmount(Math.max(0.01, +e.target.value))} />
-          <span className="ls-muted" style={{ fontSize:12 }}>= {fmt(cost)}</span>
+          <span className="ls-muted" style={{ whiteSpace:'nowrap' }}>จำนวน (฿):</span>
+          <input type="number" min="100" step="100" className="ls-input" style={{ width:110 }}
+            value={bahtAmount} onChange={e => setBahtAmount(Math.max(100, +e.target.value))} />
+          <span className="ls-muted" style={{ fontSize:11, whiteSpace:'nowrap' }}>≈ {buyUnits.toFixed(4)} {meta.unitLabel}</span>
         </div>
-        <div style={{ display:'flex', gap:6, marginTop:10 }}>
-          <button className="ls-btn ls-btn-primary" disabled={!canTradeToday || state.cash < cost} onClick={buy} style={{ flex:1 }}>ซื้อ</button>
-          <button className="ls-btn" disabled={!canTradeToday || holding < amount} onClick={sell} style={{ flex:1 }}>ขาย</button>
+        <div style={{ display:'flex', gap:6, marginTop:8 }}>
+          <button className="ls-btn ls-btn-primary" disabled={!canTrade || state.cash < bahtAmount} onClick={buy} style={{ flex:1 }}>ซื้อ</button>
+          <button className="ls-btn" disabled={!canTrade || holding < sellUnits} onClick={sell} style={{ flex:1 }}>ขาย</button>
         </div>
-        {!canTradeToday && <div className="ls-muted" style={{ marginTop:6, fontSize:11 }}>⏰ เทรดได้วันละ 1 ครั้ง — รอพรุ่งนี้</div>}
+      </div>
+
+      <div className="ls-card-tight" style={{ marginBottom:10 }}>
+        <div className="ls-h3">💰 DCA รายเดือน (ตั้งค่าได้ตลอด)</div>
+        {Object.entries(ASSETS).map(([k, m]) => (
+          <div key={k} style={{ display:'flex', gap:8, alignItems:'center', marginBottom:6 }}>
+            <span style={{ minWidth:90, fontSize:12 }}>{m.emoji} {m.label}</span>
+            <input type="number" min="0" step="100" className="ls-input" style={{ width:100 }}
+              value={dcaSettings[k] || 0}
+              onChange={e => setState(s => ({ ...s, dcaSettings: { ...(s.dcaSettings || {}), [k]: Math.max(0, +e.target.value) } }))}
+            />
+            <span className="ls-muted" style={{ fontSize:11 }}>/เดือน</span>
+          </div>
+        ))}
+        <div className="ls-muted" style={{ fontSize:11 }}>
+          รวม: {fmtCompact(Object.values(dcaSettings).reduce((a, v) => a + (v || 0), 0))}/เดือน
+        </div>
       </div>
 
       <div className="ls-card-tight">
         <div className="ls-h3">พอร์ตของฉัน</div>
         {Object.entries(state.portfolio).filter(([, v]) => v > 0).length === 0 && <div className="ls-muted">ยังไม่มีสินทรัพย์</div>}
         {Object.entries(state.portfolio).filter(([, v]) => v > 0).map(([k, v]) => {
-          const m     = ASSETS[k];
-          const value = v * state.assetPrices[k];
+          const m        = ASSETS[k];
+          const value    = v * state.assetPrices[k];
+          const cost     = state.portfolioCost?.[k] || 0;
+          const pnl      = value - cost;
+          const pnlPct   = cost > 0 ? (pnl / cost) * 100 : 0;
+          const pnlColor = pnl >= 0 ? 'var(--c-gr)' : 'var(--c-rd)';
           return (
-            <div key={k} className="ls-stat-row">
-              <span className="ls-stat-label">{m.emoji} {m.label}</span>
-              <span className="ls-stat-value" style={{ fontSize:12 }}>
-                {v.toFixed(2)} <span style={{ color:'var(--c-dm)', fontWeight:400 }}>= {fmtCompact(value)}</span>
-              </span>
+            <div key={k} style={{ paddingBottom:8, marginBottom:6, borderBottom:'1px dashed var(--c-sf2)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+                <span className="ls-stat-label">{m.emoji} {m.label}</span>
+                <span className="ls-stat-value" style={{ fontSize:12 }}>{fmtCompact(value)}</span>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, marginTop:3 }}>
+                <span className="ls-muted">{v.toFixed(4)} {m.unitLabel} · ต้นทุน {cost > 0 ? fmtCompact(cost) : '—'}</span>
+                {cost > 0 && (
+                  <span style={{ color: pnlColor, fontWeight:600 }}>
+                    {pnl >= 0 ? '+' : ''}{fmtCompact(pnl)} ({pnl >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%)
+                  </span>
+                )}
+              </div>
             </div>
           );
         })}
-        <div className="ls-stat-row" style={{ marginTop:6, borderTop:'1px solid var(--c-bd)', paddingTop:6 }}>
-          <span className="ls-stat-label">มูลค่ารวม</span>
-          <span className="ls-stat-value" style={{ color:'var(--c-ac)' }}>{fmtCompact(state.portfolioValue)}</span>
-        </div>
-        <div className="ls-stat-row">
+        {(() => {
+          const held = Object.entries(state.portfolio).filter(([, v]) => v > 0);
+          if (held.length === 0) return null;
+          const totalCost  = held.reduce((a, [k]) => a + (state.portfolioCost?.[k] || 0), 0);
+          const totalValue = state.portfolioValue;
+          const totalPnl   = totalValue - totalCost;
+          const totalPct   = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+          const pnlColor   = totalPnl >= 0 ? 'var(--c-gr)' : 'var(--c-rd)';
+          return (
+            <div style={{ marginTop:4, borderTop:'1px solid var(--c-bd)', paddingTop:8 }}>
+              <div className="ls-stat-row">
+                <span className="ls-stat-label">มูลค่ารวม</span>
+                <span className="ls-stat-value" style={{ color:'var(--c-ac)' }}>{fmtCompact(totalValue)}</span>
+              </div>
+              {totalCost > 0 && (
+                <div className="ls-stat-row">
+                  <span className="ls-stat-label">ต้นทุนรวม</span>
+                  <span className="ls-stat-value">{fmtCompact(totalCost)}</span>
+                </div>
+              )}
+              {totalCost > 0 && (
+                <div className="ls-stat-row">
+                  <span className="ls-stat-label">กำไร/ขาดทุน</span>
+                  <span className="ls-stat-value" style={{ color: pnlColor, fontWeight:700 }}>
+                    {totalPnl >= 0 ? '+' : ''}{fmtCompact(totalPnl)}{' '}
+                    <span style={{ fontSize:11 }}>({totalPnl >= 0 ? '+' : ''}{totalPct.toFixed(1)}%)</span>
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        <div className="ls-stat-row" style={{ borderTop:'1px solid var(--c-sf2)', paddingTop:6, marginTop:4 }}>
           <span className="ls-stat-label">Passive income / เดือน</span>
           <span className="ls-stat-value" style={{ color:'var(--c-gr)' }}>+{fmtCompact(state.passiveIncome)}</span>
         </div>
@@ -852,6 +949,19 @@ function GameScreen({ state, setState, speed, setSpeed, paused, setPaused, onRes
 
       <TopBar state={state} />
 
+      {/* Day progress bar */}
+      <div style={{ position:'relative', height:4, background:'var(--c-sf2)', borderRadius:2, marginBottom:12, overflow:'hidden' }}
+           title="แถบเวลา — เต็มแล้ว = ผ่าน 1 วัน">
+        <div
+          key={`${state.day}-${state.month}-${state.year}`}
+          className="ls-tick-bar-fill"
+          style={{
+            animation: `ls-tick-bar ${Math.round(8000 / speed)}ms linear`,
+            animationPlayState: paused || state.pendingEvent ? 'paused' : 'running',
+          }}
+        />
+      </div>
+
       <div className="ls-main-layout" style={{ display:'grid', gridTemplateColumns:'340px 1fr', gap:12 }}>
         {/* LEFT */}
         <div>
@@ -878,14 +988,102 @@ function GameScreen({ state, setState, speed, setSpeed, paused, setPaused, onRes
             <div className="ls-grid-3">
               {Object.entries(AFTER_WORK).map(([k, a]) => (
                 <button key={k} className="ls-btn" data-sel={state.afterWorkActivity === k}
-                  onClick={() => setState(s => ({ ...s, afterWorkActivity: k }))}
+                  onClick={() => setState(s => ({ ...s, afterWorkActivity: k, afterWorkSubOption: a.options[0].id }))}
                   style={{ flexDirection:'column', padding:8, gap:2 }}
-                  title={a.desc + (a.cost ? ` (฿${a.cost})` : '')}
                 >
                   <div style={{ fontSize:18 }}>{a.emoji}</div>
                   <div style={{ fontSize:10, fontWeight:600 }}>{a.label}</div>
                 </button>
               ))}
+            </div>
+            <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:3 }}>
+              {AFTER_WORK[state.afterWorkActivity].options.map(opt => (
+                <button key={opt.id} className="ls-btn" data-sel={state.afterWorkSubOption === opt.id}
+                  onClick={() => setState(s => ({ ...s, afterWorkSubOption: opt.id }))}
+                  style={{ justifyContent:'flex-start', padding:'5px 10px', fontSize:12 }}
+                >
+                  <span>{opt.emoji} {opt.label}</span>
+                  <span className="ls-muted" style={{ marginLeft:'auto', fontSize:11 }}>
+                    {opt.cost > 0 ? `-฿${opt.cost} ` : ''}{opt.desc}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {state.afterWorkActivity === 'study' && (
+              <div style={{ marginTop:6 }}>
+                <div className="ls-muted" style={{ fontSize:11, marginBottom:4 }}>เรียน skill ไหน</div>
+                <div style={{ display:'flex', gap:3 }}>
+                  <button className="ls-btn" data-sel={state.studySkill === null}
+                    onClick={() => setState(s => ({ ...s, studySkill: null }))}
+                    style={{ flex:1, padding:'4px 6px', fontSize:11 }}
+                  >อัตโนมัติ</button>
+                  {Object.entries(SKILL_META).map(([k, m]) => (
+                    <button key={k} className="ls-btn" data-sel={state.studySkill === k}
+                      onClick={() => setState(s => ({ ...s, studySkill: k }))}
+                      style={{ flex:1, padding:'4px 6px', fontSize:11 }}
+                    >{m.emoji} {m.label}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="ls-card-tight" style={{ marginTop:10 }}>
+            <div className="ls-h3">🍜 ค่าครองชีพรายวัน</div>
+            <div style={{ marginBottom:6 }}>
+              <div className="ls-muted" style={{ fontSize:11, marginBottom:4 }}>อาหาร</div>
+              <div style={{ display:'flex', gap:4 }}>
+                {FOOD_TIERS.map((t, i) => (
+                  <button key={i} className="ls-btn" data-sel={state.foodTier === i}
+                    onClick={() => setState(s => ({ ...s, foodTier: i }))}
+                    style={{ flex:1, flexDirection:'column', padding:6, gap:1 }}
+                    title={t.desc}
+                  >
+                    <div>{t.emoji}</div>
+                    <div style={{ fontSize:10 }}>{t.label}</div>
+                    <div style={{ fontSize:10, color:'var(--c-dm)' }}>฿{t.cost}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="ls-muted" style={{ fontSize:11, marginBottom:4 }}>เดินทาง</div>
+              <div style={{ display:'flex', gap:4 }}>
+                {TRANSPORT_TIERS.map((t, i) => (
+                  <button key={i} className="ls-btn" data-sel={state.transportTier === i}
+                    onClick={() => setState(s => ({ ...s, transportTier: i }))}
+                    style={{ flex:1, flexDirection:'column', padding:6, gap:1 }}
+                    title={t.desc}
+                  >
+                    <div>{t.emoji}</div>
+                    <div style={{ fontSize:10 }}>{t.label}</div>
+                    <div style={{ fontSize:10, color:'var(--c-dm)' }}>฿{t.cost}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="ls-muted" style={{ fontSize:11, marginTop:6 }}>
+              รวม ≈ ฿{((FOOD_TIERS[state.foodTier]?.cost || 0) + (TRANSPORT_TIERS[state.transportTier]?.cost || 0)) * 30}/เดือน
+            </div>
+          </div>
+
+          <div className="ls-card-tight" style={{ marginTop:10 }}>
+            <div className="ls-h3">🛡️ ประกันสุขภาพ</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+              {Object.entries(INSURANCE_PLANS).map(([k, plan]) => (
+                <button key={k} className="ls-btn" data-sel={state.insurance === k}
+                  onClick={() => setState(s => ({ ...s, insurance: k }))}
+                  style={{ justifyContent:'flex-start', padding:'6px 10px', fontSize:12 }}
+                >
+                  <span>{plan.emoji} {plan.label}</span>
+                  <span className="ls-muted" style={{ marginLeft:'auto', fontSize:11 }}>
+                    {plan.premium > 0 ? `฿${plan.premium}/เดือน` : 'ฟรี'}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="ls-muted" style={{ fontSize:11, marginTop:6 }}>
+              {INSURANCE_PLANS[state.insurance]?.desc}
             </div>
           </div>
 
@@ -1021,7 +1219,7 @@ function EndScreen({ state, onRestart }) {
 // App + game loop + storage
 // ============================================================
 
-const SAVE_KEY = 'lifesim_save_v1';
+const SAVE_KEY = 'lifesim_save_v2';
 
 export default function App() {
   const [gameState, setGameState] = useState(null);
@@ -1089,7 +1287,9 @@ export default function App() {
   const handleChoice = useCallback((choice) => {
     setGameState(prev => {
       if (!prev || !prev.pendingEvent) return prev;
-      return { ...choice.apply(prev), pendingEvent: null };
+      // Pass state with pendingEvent cleared so choice.apply can optionally set a new one
+      const applied = choice.apply({ ...prev, pendingEvent: null });
+      return applied;
     });
   }, []);
 
